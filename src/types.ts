@@ -2,8 +2,6 @@
 
 export type User = {
   id: number
-  provider: string
-  provider_user_id: string
   username: string | null
   email: string | null
   name: string | null

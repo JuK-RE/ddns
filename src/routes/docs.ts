@@ -33,10 +33,9 @@ docs.get('/openapi.json', (c) => {
       schemas: {
         User: {
           type: 'object',
+          description: 'Um usuário pode ter mais de um provider vinculado — ver user_identities no banco (não exposto via API por enquanto).',
           properties: {
             id: { type: 'integer' },
-            provider: { type: 'string', example: 'github' },
-            provider_user_id: { type: 'string' },
             username: { type: 'string', nullable: true },
             email: { type: 'string', nullable: true },
             name: { type: 'string', nullable: true },
@@ -171,6 +170,30 @@ docs.get('/openapi.json', (c) => {
                   schema: {
                     type: 'object',
                     properties: { sessions: { type: 'array', items: { $ref: '#/components/schemas/Session' } } },
+                  },
+                },
+              },
+            },
+            '401': {
+              description: 'Não autenticado',
+              content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' } } },
+            },
+          },
+        },
+        delete: {
+          tags: ['auth'],
+          summary: 'Revoga (desloga remotamente) todas as sessões do usuário',
+          description:
+            'Desconecta todos os dispositivos de uma vez, incluindo a sessão usada nessa própria requisição — o token atual deixa de servir depois dessa chamada.',
+          security: [{ bearerAuth: [] }],
+          responses: {
+            '200': {
+              description: 'Sessões revogadas',
+              content: {
+                'application/json': {
+                  schema: {
+                    type: 'object',
+                    properties: { ok: { type: 'boolean' }, revoked: { type: 'integer', description: 'Quantidade de sessões revogadas agora' } },
                   },
                 },
               },

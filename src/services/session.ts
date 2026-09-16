@@ -28,8 +28,8 @@ type Env = { Bindings: CloudflareBindings }
 // O JWT sozinho não pode ser invalidado antes de expirar — por isso cada
 // token carrega um `jti` que corresponde a uma linha na tabela
 // `sessions`. getSession() confere a assinatura E se essa linha ainda
-// existe e não foi revogada, o que permite "deslogar remotamente" uma
-// sessão específica (ver revokeSession()).
+// existe (ver revokeSession()/revokeAllSessions(), que apagam a linha em
+// vez de só marcar como revogada).
 export async function createSessionToken(c: Context<Env>, userId: number, provider: string): Promise<string> {
   const jti = crypto.randomUUID()
   const exp = Math.floor(Date.now() / 1000) + SESSION_TTL_SECONDS
@@ -46,9 +46,9 @@ export async function createSessionToken(c: Context<Env>, userId: number, provid
 
 // Lê e valida o token do header Authorization da request atual. Retorna
 // `null` se não houver header, não for "Bearer ...", a assinatura/
-// expiração forem inválidas, ou a sessão correspondente tiver sido
-// revogada (ou não existir mais — ex.: tokens emitidos antes dessa
-// migração, sem `jti`).
+// expiração forem inválidas, ou a sessão correspondente não existir mais
+// (revogada — ver revokeSession()/revokeAllSessions() — ou nunca ter
+// tido `jti`, caso de tokens emitidos antes dessa migração).
 export async function getSession(c: Context<Env>): Promise<SessionPayload | null> {
   const header = c.req.header('authorization')
   const token = header?.startsWith('Bearer ') ? header.slice('Bearer '.length) : null
@@ -65,7 +65,7 @@ export async function getSession(c: Context<Env>): Promise<SessionPayload | null
     if (!payload.jti) return null
 
     const session = await c.env.DB.prepare(
-      `SELECT id FROM sessions WHERE id = ? AND revoked_at IS NULL AND expires_at > datetime('now')`
+      `SELECT id FROM sessions WHERE id = ? AND expires_at > datetime('now')`
     )
       .bind(payload.jti)
       .first()
@@ -80,20 +80,32 @@ export async function getSession(c: Context<Env>): Promise<SessionPayload | null
 
 // Revoga uma sessão específica do usuário (ex.: "sair" no dispositivo
 // atual, ou deslogar remotamente uma sessão listada em GET
-// /auth/sessions). Escopado por `userId` pra um usuário não conseguir
+// /auth/sessions). Apaga a linha de vez — não mantém histórico de
+// sessões revogadas. Escopado por `userId` pra um usuário não conseguir
 // revogar sessão de outra pessoa mesmo sabendo o id. Retorna `true` se
-// alguma linha foi de fato revogada agora.
+// alguma linha foi de fato apagada agora.
 export async function revokeSession(db: D1Database, sessionId: string, userId: number): Promise<boolean> {
   const result = await db
-    .prepare(`UPDATE sessions SET revoked_at = datetime('now') WHERE id = ? AND user_id = ? AND revoked_at IS NULL`)
+    .prepare(`DELETE FROM sessions WHERE id = ? AND user_id = ?`)
     .bind(sessionId, userId)
     .run()
 
   return (result.meta.changes ?? 0) > 0
 }
 
-// Lista as sessões (ativas e revogadas) do usuário, mais recente primeiro
-// — usado pra montar a tela de "dispositivos conectados".
+// Revoga (apaga) TODAS as sessões do usuário de uma vez (ex.: "sair de
+// todos os dispositivos", incluindo o dispositivo atual). Retorna
+// quantas sessões foram de fato apagadas agora.
+export async function revokeAllSessions(db: D1Database, userId: number): Promise<number> {
+  const result = await db.prepare(`DELETE FROM sessions WHERE user_id = ?`).bind(userId).run()
+
+  return result.meta.changes ?? 0
+}
+
+// Lista as sessões do usuário, mais recente primeiro — usado pra montar
+// a tela de "dispositivos conectados". Como revogar agora apaga a linha,
+// só aparecem sessões ativas ou expiradas (nunca "revogada" — a linha
+// já não existe mais nesse caso).
 export async function listSessions(db: D1Database, userId: number): Promise<SessionInfo[]> {
   const { results } = await db
     .prepare(

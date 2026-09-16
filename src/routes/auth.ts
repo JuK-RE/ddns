@@ -3,7 +3,8 @@ import type { Context } from 'hono'
 import { githubAuth } from '@hono/oauth-providers/github'
 import { googleAuth } from '@hono/oauth-providers/google'
 import { findOrCreateOAuthUser, getUserById, type OAuthProfile } from '../services/users'
-import { createSessionToken, getSession, revokeSession, listSessions } from '../services/session'
+import { createSessionToken, getSession, revokeSession, revokeAllSessions, listSessions } from '../services/session'
+import { sendWelcomeEmail, sendNewLoginEmail } from '../services/email'
 import { requireAuth } from '../middlewares/auth'
 import type { AppVariables } from '../types'
 
@@ -30,9 +31,16 @@ const auth = new Hono<Env>()
 // sessão (JWT + linha em `sessions`) e redireciona pro front levando o
 // token no fragmento da URL (nunca é enviado a nenhum servidor, só o JS
 // do front consegue ler).
+//
+// O e-mail é disparado via `waitUntil` — não bloqueia o redirect
+// esperando o Resend responder, e uma falha no envio nunca impede o
+// login (ver services/email.ts).
 async function completeLogin(c: Context<Env>, provider: string, profile: OAuthProfile) {
-  const user = await findOrCreateOAuthUser(c.env.DB, provider, profile)
+  const { user, isNew } = await findOrCreateOAuthUser(c.env.DB, provider, profile)
   const token = await createSessionToken(c, user.id, provider)
+
+  c.executionCtx.waitUntil(isNew ? sendWelcomeEmail(c.env, user) : sendNewLoginEmail(c.env, user, provider))
+
   return c.redirect(`${c.env.FRONTEND_URL}#token=${token}`)
 }
 
@@ -133,6 +141,15 @@ auth.get('/sessions', requireAuth, async (c) => {
   const user = c.get('user')
   const sessions = await listSessions(c.env.DB, user.id)
   return c.json({ sessions })
+})
+
+// Revoga TODAS as sessões do usuário logado de uma vez (ex.: "sair de
+// todos os dispositivos"). Inclui a sessão atual — o token usado nessa
+// própria requisição deixa de servir depois dessa chamada.
+auth.delete('/sessions', requireAuth, async (c) => {
+  const user = c.get('user')
+  const revoked = await revokeAllSessions(c.env.DB, user.id)
+  return c.json({ ok: true, revoked })
 })
 
 // Revoga remotamente uma sessão específica do usuário logado (ex.:
