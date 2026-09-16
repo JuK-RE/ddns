@@ -1,8 +1,11 @@
 import type { User } from '../types'
 
-export type GithubProfile = {
+// Perfil já normalizado a partir do provider (GitHub, Google, ...) —
+// cada rota em `routes/auth.ts` mapeia o formato específico do provider
+// pra este formato comum antes de chamar findOrCreateOAuthUser().
+export type OAuthProfile = {
   id: number | string
-  login: string
+  username: string | null
   email?: string | null
   name?: string | null
   avatar_url?: string | null
@@ -10,13 +13,13 @@ export type GithubProfile = {
 
 // Busca o usuário pelo (provider, provider_user_id) e cria se ainda não
 // existir. Essa é a única forma de "cadastro" no sistema — não existe
-// senha, tudo vem da conta externa (GitHub, por enquanto).
-export async function findOrCreateGithubUser(db: D1Database, profile: GithubProfile): Promise<User> {
+// senha, tudo vem de uma conta externa (GitHub, Google, ...).
+export async function findOrCreateOAuthUser(db: D1Database, provider: string, profile: OAuthProfile): Promise<User> {
   const providerUserId = String(profile.id)
 
   const existing = await db
     .prepare('SELECT * FROM users WHERE provider = ? AND provider_user_id = ?')
-    .bind('github', providerUserId)
+    .bind(provider, providerUserId)
     .first<User>()
 
   if (existing) {
@@ -29,9 +32,9 @@ export async function findOrCreateGithubUser(db: D1Database, profile: GithubProf
        VALUES (?, ?, ?, ?, ?, ?)`
     )
     .bind(
-      'github',
+      provider,
       providerUserId,
-      profile.login,
+      profile.username,
       profile.email ?? null,
       profile.name ?? null,
       profile.avatar_url ?? null
