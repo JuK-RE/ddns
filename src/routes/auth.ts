@@ -38,15 +38,18 @@ auth.get('/github', async (c) => {
   const user = await findOrCreateGithubUser(c.env.DB, githubUser)
   await createSession(c, user.id, 'github')
 
-  return c.redirect('/')
+  // Volta pro front (SPA), não pra própria API — é lá que o usuário estava.
+  return c.redirect(c.env.FRONTEND_URL)
 })
 
+// GET simples (o front chama via fetch, não precisa ser POST aqui: só
+// limpa o cookie, não muda estado no banco).
 auth.get('/logout', (c) => {
   clearSession(c)
-  return c.redirect('/')
+  return c.json({ ok: true })
 })
 
-// Endpoint simples pro frontend checar quem está logado (ou null).
+// Endpoint pro front checar quem está logado (ou null) ao carregar a página.
 auth.get('/me', async (c) => {
   const session = await getSession(c)
 

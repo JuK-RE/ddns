@@ -14,9 +14,14 @@ export type SessionPayload = {
 type Env = { Bindings: CloudflareBindings }
 
 // Cria a sessão: assina um JWT com o SESSION_SECRET e grava num cookie
-// HttpOnly + Secure + SameSite=Lax. Não guardamos nada em D1 pra isso —
-// o próprio cookie é a sessão (stateless, sem leitura extra no banco a
-// cada request).
+// HttpOnly. Não guardamos nada em D1 pra isso — o próprio cookie é a
+// sessão (stateless, sem leitura extra no banco a cada request).
+//
+// `sameSite: 'None'` + `secure: true` porque o front (ddns-ui) fica numa
+// origem diferente da API — sem isso o navegador não manda o cookie nas
+// chamadas cross-origin. Como SameSite=None exige HTTPS, esse fluxo só
+// funciona contra a API implantada (preview/produção); `wrangler dev`
+// puro em http não vai manter a sessão entre origens diferentes.
 export async function createSession(c: Context<Env>, userId: number, provider: string) {
   const payload: SessionPayload = {
     sub: userId,
@@ -30,7 +35,7 @@ export async function createSession(c: Context<Env>, userId: number, provider: s
     path: '/',
     httpOnly: true,
     secure: true,
-    sameSite: 'Lax',
+    sameSite: 'None',
     maxAge: SESSION_TTL_SECONDS,
   })
 }
@@ -50,5 +55,5 @@ export async function getSession(c: Context<Env>): Promise<SessionPayload | null
 }
 
 export function clearSession(c: Context<Env>) {
-  deleteCookie(c, SESSION_COOKIE, { path: '/' })
+  deleteCookie(c, SESSION_COOKIE, { path: '/', sameSite: 'None', secure: true })
 }
