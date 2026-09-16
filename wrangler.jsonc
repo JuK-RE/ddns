@@ -16,7 +16,7 @@
     // URL do front (ddns-ui) — usada pra CORS e pra redirecionar depois do
     // login com GitHub. Atualize aqui quando o ddns-ui tiver uma URL de
     // produção/preview definida.
-    "FRONTEND_URL": "http://localhost:5173"
+    "FRONTEND_URL": "https://vite.juk.re"
   }
   // "compatibility_flags": [
   //   "nodejs_compat"
