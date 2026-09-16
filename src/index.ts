@@ -1,41 +1,37 @@
 import { Hono } from 'hono'
+import { cors } from 'hono/cors'
+import auth from './routes/auth'
+import versions from './routes/versions'
+import docs from './routes/docs'
+import type { AppVariables } from './types'
 
-const app = new Hono<{ Bindings: CloudflareBindings }>()
+const app = new Hono<{ Bindings: CloudflareBindings; Variables: AppVariables }>()
+
+// CORS: o front (ddns-ui) roda em outra origem. Como a sessão agora é um
+// token Bearer (sem cookie), não precisamos de `credentials: true` nem
+// nos preocupar com SameSite — só liberar a origem e o header
+// `Authorization` pro preflight passar.
+app.use('*', async (c, next) => {
+  const allowedOrigins = new Set(
+    ['http://localhost:5173', c.env.FRONTEND_URL].filter(Boolean)
+  )
+
+  return cors({
+    origin: (origin) => (allowedOrigins.has(origin) ? origin : undefined),
+    allowHeaders: ['Content-Type', 'Authorization'],
+  })(c, next)
+})
 
 app.get('/', (c) => {
   return c.json({"message":"Hello Clancy"})
 })
 
-// Lista as versões registradas na tabela de teste (mais recente primeiro)
-app.get('/versions', async (c) => {
-  const { results } = await c.env.DB.prepare(
-    'SELECT id, version, description, created_at FROM system_versions ORDER BY id DESC'
-  ).all()
-
-  return c.json({ versions: results })
-})
-
-// Registra uma nova versão do sistema
-app.post('/versions', async (c) => {
-  const body = await c.req.json<{ version?: string; description?: string }>()
-
-  if (!body.version) {
-    return c.json({ error: 'O campo "version" é obrigatório' }, 400)
-  }
-
-  const insert = await c.env.DB.prepare(
-    'INSERT INTO system_versions (version, description) VALUES (?, ?)'
-  )
-    .bind(body.version, body.description ?? null)
-    .run()
-
-  const created = await c.env.DB.prepare(
-    'SELECT id, version, description, created_at FROM system_versions WHERE id = ?'
-  )
-    .bind(insert.meta.last_row_id)
-    .first()
-
-  return c.json({ version: created }, 201)
-})
+app.route('/auth', auth)
+app.route('/versions', versions)
+app.route('/docs', docs)
 
 export default app
+
+// Tipo exportado pro cliente RPC do Hono (hc<AppType>(...)), caso um
+// front-end venha a consumir essa API com type-safety ponta a ponta.
+export type AppType = typeof app
