@@ -1,7 +1,7 @@
 import { Hono } from 'hono'
 import { githubAuth } from '@hono/oauth-providers/github'
 import { findOrCreateGithubUser } from '../services/users'
-import { createSession, clearSession, getSession } from '../services/session'
+import { createSessionToken, getSession } from '../services/session'
 import { getUserById } from '../services/users'
 import type { AppVariables } from '../types'
 
@@ -36,20 +36,24 @@ auth.get('/github', async (c) => {
   }
 
   const user = await findOrCreateGithubUser(c.env.DB, githubUser)
-  await createSession(c, user.id, 'github')
+  const token = await createSessionToken(c, user.id, 'github')
 
-  // Volta pro front (SPA), não pra própria API — é lá que o usuário estava.
-  return c.redirect(c.env.FRONTEND_URL)
+  // Volta pro front (SPA) levando o token no fragmento da URL (#) — o
+  // fragmento nunca é enviado a nenhum servidor (nem ao nosso, nem a
+  // terceiros), só o JavaScript do front consegue ler. O front extrai o
+  // token, guarda e limpa a URL.
+  return c.redirect(`${c.env.FRONTEND_URL}#token=${token}`)
 })
 
-// GET simples (o front chama via fetch, não precisa ser POST aqui: só
-// limpa o cookie, não muda estado no banco).
+// Sem estado no servidor — o "logout" é só o front descartar o token que
+// guardou. Mantido como rota por simetria e pra abrir espaço, no futuro,
+// pra uma lista de revogação se precisar invalidar tokens antes de expirar.
 auth.get('/logout', (c) => {
-  clearSession(c)
   return c.json({ ok: true })
 })
 
-// Endpoint pro front checar quem está logado (ou null) ao carregar a página.
+// Endpoint pro front checar quem está logado (ou null) a partir do token
+// guardado.
 auth.get('/me', async (c) => {
   const session = await getSession(c)
 
