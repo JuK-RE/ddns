@@ -13,12 +13,12 @@ docs.get('/openapi.json', (c) => {
     openapi: '3.0.3',
     info: {
       title: 'ddns-api',
-      description: 'API do DDNS (JUK.re) — autenticação via GitHub OAuth e gerenciamento de versões.',
+      description: 'API do DDNS (JUK.re) — autenticação via GitHub/Google OAuth e gerenciamento de versões.',
       version: '1.0.0',
     },
     servers: [{ url: '/', description: 'Origem atual' }],
     tags: [
-      { name: 'auth', description: 'Login via GitHub e sessão' },
+      { name: 'auth', description: 'Login via GitHub/Google e sessão' },
       { name: 'versions', description: 'Versões do sistema' },
     ],
     components: {
@@ -57,6 +57,16 @@ docs.get('/openapi.json', (c) => {
           type: 'object',
           properties: { error: { type: 'string' } },
         },
+        Session: {
+          type: 'object',
+          properties: {
+            id: { type: 'string', description: 'jti do JWT emitido pra essa sessão' },
+            provider: { type: 'string', example: 'github' },
+            created_at: { type: 'string', format: 'date-time' },
+            expires_at: { type: 'string', format: 'date-time' },
+            revoked_at: { type: 'string', format: 'date-time', nullable: true },
+          },
+        },
       },
     },
     paths: {
@@ -90,11 +100,35 @@ docs.get('/openapi.json', (c) => {
           },
         },
       },
+      '/auth/google': {
+        get: {
+          tags: ['auth'],
+          summary: 'Inicia ou finaliza o login com Google',
+          description:
+            'Sem `?code=`: redireciona pro Google. Com `?code=` (callback do Google): troca pelo token, cria a sessão e redireciona pro front com `#token=<jwt>`.',
+          parameters: [
+            {
+              name: 'code',
+              in: 'query',
+              required: false,
+              schema: { type: 'string' },
+              description: 'Código de autorização enviado pelo Google no callback.',
+            },
+          ],
+          responses: {
+            '302': { description: 'Redirect (pro Google, ou de volta pro front com o token)' },
+            '401': {
+              description: 'Falha na autenticação com o Google',
+              content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' } } },
+            },
+          },
+        },
+      },
       '/auth/logout': {
         get: {
           tags: ['auth'],
           summary: 'Logout',
-          description: 'Sem estado no servidor — o front só descarta o token salvo localmente.',
+          description: 'Revoga a sessão do token atual (se houver) e o front descarta o token salvo localmente.',
           responses: {
             '200': {
               description: 'OK',
@@ -119,6 +153,62 @@ docs.get('/openapi.json', (c) => {
                   },
                 },
               },
+            },
+          },
+        },
+      },
+      '/auth/sessions': {
+        get: {
+          tags: ['auth'],
+          summary: 'Lista as sessões do usuário logado',
+          description: 'Inclui sessões ativas e revogadas (mais recente primeiro) — base pra uma tela de "dispositivos conectados".',
+          security: [{ bearerAuth: [] }],
+          responses: {
+            '200': {
+              description: 'Lista de sessões',
+              content: {
+                'application/json': {
+                  schema: {
+                    type: 'object',
+                    properties: { sessions: { type: 'array', items: { $ref: '#/components/schemas/Session' } } },
+                  },
+                },
+              },
+            },
+            '401': {
+              description: 'Não autenticado',
+              content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' } } },
+            },
+          },
+        },
+      },
+      '/auth/sessions/{id}': {
+        delete: {
+          tags: ['auth'],
+          summary: 'Revoga (desloga remotamente) uma sessão específica',
+          description: 'Só revoga sessões que pertencem ao próprio usuário logado.',
+          security: [{ bearerAuth: [] }],
+          parameters: [
+            {
+              name: 'id',
+              in: 'path',
+              required: true,
+              schema: { type: 'string' },
+              description: 'jti da sessão (ver GET /auth/sessions)',
+            },
+          ],
+          responses: {
+            '200': {
+              description: 'Sessão revogada',
+              content: { 'application/json': { schema: { type: 'object', properties: { ok: { type: 'boolean' } } } } },
+            },
+            '401': {
+              description: 'Não autenticado',
+              content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' } } },
+            },
+            '404': {
+              description: 'Sessão não encontrada (ou não pertence ao usuário)',
+              content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' } } },
             },
           },
         },
