@@ -8,7 +8,8 @@
     "db:migrations": "wrangler d1 migrations apply ddns-api-db --remote"
   },
   "dependencies": {
-    "hono": "^4.13.8"
+    "hono": "^4.13.8",
+    "@hono/oauth-providers": "^0.9.0"
   },
   "devDependencies": {
     "wrangler": "^4.110.0"
