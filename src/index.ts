@@ -1,5 +1,6 @@
 import { Hono } from 'hono'
 import { cors } from 'hono/cors'
+import { hasSessionCookie } from './services/session'
 import auth from './routes/auth'
 import versions from './routes/versions'
 import docs from './routes/docs'
@@ -7,28 +8,57 @@ import type { AppVariables } from './types'
 
 const app = new Hono<{ Bindings: CloudflareBindings; Variables: AppVariables }>()
 
-// CORS: o front (ddns-ui) roda em outra origem. Como a sessão agora é um
-// token Bearer (sem cookie), não precisamos de `credentials: true` nem
-// nos preocupar com SameSite — só liberar a origem e o header
-// `Authorization` pro preflight passar.
+function allowedOrigins(c: { env: CloudflareBindings }) {
+  return new Set(['http://localhost:5173', c.env.FRONTEND_URL].filter(Boolean))
+}
+
+// CORS: o front do navegador fala com a API pelo próprio domínio (/api, via
+// proxy), então em produção nem precisa de CORS. Fica liberado só pras
+// origens conhecidas, sem `credentials` — o cookie de sessão nunca é
+// aceito numa chamada cross-origin.
 app.use('*', async (c, next) => {
-  const allowedOrigins = new Set(
-    ['http://localhost:5173', c.env.FRONTEND_URL].filter(Boolean)
-  )
+  const origins = allowedOrigins(c)
 
   return cors({
-    origin: (origin) => (allowedOrigins.has(origin) ? origin : undefined),
+    origin: (origin) => (origins.has(origin) ? origin : undefined),
     allowHeaders: ['Content-Type', 'Authorization'],
   })(c, next)
 })
 
-app.get('/', (c) => {
+// CSRF: toda request que muda estado (POST/PUT/PATCH/DELETE) autenticada
+// por cookie precisa vir de uma origem conhecida. O SameSite=Lax já barra
+// quase tudo; isso fecha o resto. Requests com Bearer (CLI) não carregam
+// cookie e passam direto.
+app.use('*', async (c, next) => {
+  const safe = ['GET', 'HEAD', 'OPTIONS'].includes(c.req.method)
+  if (safe || !hasSessionCookie(c)) return next()
+
+  const origin = c.req.header('origin')
+  const fetchSite = c.req.header('sec-fetch-site')
+  const trusted = (origin && allowedOrigins(c).has(origin)) || (!origin && fetchSite === 'same-origin')
+
+  if (!trusted) {
+    return c.json({ error: 'Origem não permitida' }, 403)
+  }
+
+  return next()
+})
+
+// Rotas da API. Montadas em dois lugares:
+// - "/api/..." → caminho usado pelo front via proxy (ddns.juk.re/api/...);
+// - "/..."     → caminho direto, pra CLI/roteadores e compatibilidade.
+const api = new Hono<{ Bindings: CloudflareBindings; Variables: AppVariables }>()
+
+api.get('/', (c) => {
   return c.json({"message":"Hello Clancy"})
 })
 
-app.route('/auth', auth)
-app.route('/versions', versions)
-app.route('/docs', docs)
+api.route('/auth', auth)
+api.route('/versions', versions)
+api.route('/docs', docs)
+
+app.route('/api', api)
+app.route('/', api)
 
 export default app
 
