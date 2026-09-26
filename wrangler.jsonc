@@ -13,10 +13,14 @@
     }
   ],
   "vars": {
-    // URL do front (ddns-ui) — usada pra CORS e pra redirecionar depois do
-    // login com GitHub. Atualize aqui quando o ddns-ui tiver uma URL de
-    // produção/preview definida.
-    "FRONTEND_URL": "https://vite.juk.re"
+    // URL pública do front (ddns-ui), sem barra no fim. Usada pra:
+    // - CORS/CSRF (origem confiável);
+    // - callback do OAuth: FRONTEND_URL + /api/auth/{google,github}
+    //   (cadastre essas URLs no Google Cloud Console e no OAuth App do GitHub);
+    // - redirecionar de volta pro front depois do login.
+    // O front (Vercel) repassa /api/* pra este Worker (rewrite no vercel.json
+    // do ddns-ui). Pra dev, sobrescreva no .dev.vars (ver .dev.vars.example).
+    "FRONTEND_URL": "https://ddns.juk.re"
   }
   // "compatibility_flags": [
   //   "nodejs_compat"

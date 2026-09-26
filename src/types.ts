@@ -12,4 +12,6 @@ export type User = {
 // `Variables` do Hono usadas pelas rotas autenticadas (c.get('user') / c.set('user', ...))
 export type AppVariables = {
   user: User
+  /** `jti` da sessão usada nesta request — marca "este dispositivo" na lista. */
+  sessionId: string
 }

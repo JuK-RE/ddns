@@ -5,9 +5,10 @@ import type { AppVariables } from '../types'
 
 type Env = { Bindings: CloudflareBindings; Variables: AppVariables }
 
-// Middleware pra proteger rotas: exige um cookie de sessão válido e um
-// usuário existente em D1. Em caso de sucesso, deixa o usuário disponível
-// via `c.get('user')` no handler.
+// Middleware pra proteger rotas: exige uma sessão válida (cookie httpOnly
+// no navegador ou Bearer em clientes como a CLI) e um usuário existente em
+// D1. Em caso de sucesso, deixa o usuário e o id da sessão disponíveis via
+// `c.get('user')` / `c.get('sessionId')`.
 export const requireAuth = createMiddleware<Env>(async (c, next) => {
   const session = await getSession(c)
 
@@ -22,5 +23,6 @@ export const requireAuth = createMiddleware<Env>(async (c, next) => {
   }
 
   c.set('user', user)
+  c.set('sessionId', session.jti)
   await next()
 })
