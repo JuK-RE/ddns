@@ -4,6 +4,8 @@ import { hasSessionCookie } from './services/session'
 import auth from './routes/auth'
 import versions from './routes/versions'
 import docs from './routes/docs'
+import hosts, { zones } from './routes/hosts'
+import ddns from './routes/ddns'
 import type { AppVariables } from './types'
 
 const app = new Hono<{ Bindings: CloudflareBindings; Variables: AppVariables }>()
@@ -56,6 +58,13 @@ api.get('/', (c) => {
 api.route('/auth', auth)
 api.route('/versions', versions)
 api.route('/docs', docs)
+api.route('/zones', zones)
+api.route('/hosts', hosts)
+
+// Rotas PÚBLICAS de atualização do DDNS (/nic/update, /v1/update/:token, /v1/ip):
+// chamadas direto em gateway.juk.re por roteadores/curl/CLI, autenticadas pelo
+// token do host. Ficam fora do /api (o proxy da Vercel não passa por elas).
+app.route('/', ddns)
 
 app.route('/api', api)
 app.route('/', api)

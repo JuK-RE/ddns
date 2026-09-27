@@ -30,3 +30,31 @@ pnpm dev                         # wrangler dev na porta 8787
 ```
 
 No `ddns-ui`, o `pnpm dev` já repassa `/api` pra `http://localhost:8787`.
+
+## DDNS (hosts)
+
+Rotas do painel (`/api/zones`, `/api/hosts*`, autenticadas pela sessão) e rotas **públicas** de atualização, chamadas direto em `gateway.juk.re` por roteadores/curl/CLI e autenticadas pelo token do host:
+
+- `GET /v1/update/<token>[?myip=…][&format=text]` (também aceita `Authorization: Bearer <token>` em `/v1/update`)
+- `GET /nic/update?hostname=…&myip=…`, compatível com **dyndns2** (Basic auth: usuário = hostname, senha = token)
+- `GET /v1/ip`
+
+Decisões em `docs/planejamento-ddns-hosts.md` (ADR-003 no projeto).
+
+### Configuração (uma vez)
+
+1. **Token da Cloudflare:** crie um API Token com **Zone → DNS → Edit** só na zona `juk.re`.
+   ```bash
+   wrangler secret put CF_API_TOKEN
+   wrangler secret put CF_ZONE_ID     # id da zona juk.re (ou preencha zones.cf_zone_id no D1)
+   ```
+   Pra dev local, coloque os dois no `.dev.vars`. (Opcional, só pra testes: `CF_API_BASE` aponta pra um mock da API da Cloudflare.)
+2. **Migrations** (0005–0007 criam `zones` com o seed, `hosts` e `host_ip_history`):
+   ```bash
+   pnpm db:migrations
+   ```
+3. **Rate limiting:** os bindings `DDNS_UPDATE_LIMITER` e `DDNS_AUTHFAIL_LIMITER` já estão no `wrangler.jsonc` (`ratelimits`).
+4. **Domínio:** o intervalo mínimo de 5 min usa a Cache API, que só funciona em domínio próprio (`gateway.juk.re`), não em `*.workers.dev`.
+5. Antes de liberar uma zona nova, confira que não há registro "de verdade" com o mesmo nome dentro dela (o front está em `ddns.juk.re`; `www`, `api` etc. já são nomes reservados).
+
+> ⚠️ Nunca logue a URL, a query ou os headers das rotas públicas: o token viaja neles.
