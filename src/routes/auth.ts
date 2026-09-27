@@ -66,6 +66,18 @@ function loginFailed(c: Context<Env>) {
   return c.redirect(`${c.env.FRONTEND_URL}/auth?login=error`)
 }
 
+// Sem client_id/secret o @hono/oauth-providers quebra com "Required
+// parameters were not found" (texto cru pro usuário). Aqui a gente checa
+// antes, registra no log qual segredo falta e devolve o usuário pra tela de
+// login com erro amigável.
+function missingSecrets(c: Context<Env>, names: (keyof CloudflareBindings)[]) {
+  const missing = names.filter((name) => !c.env[name])
+  if (missing.length) {
+    console.error(`[auth] Segredos ausentes: ${missing.join(', ')}. Configure com \`wrangler secret put\` (produção) ou no .dev.vars (dev).`)
+  }
+  return missing.length > 0
+}
+
 // --- GitHub -----------------------------------------------------------
 // O middleware do @hono/oauth-providers precisa do client_id/secret na
 // hora de montar a requisição — e no Workers isso só existe dentro de uma
@@ -78,7 +90,9 @@ function loginFailed(c: Context<Env>) {
 // Callback: como é um OAuth App (`oauthApp: true`), o GitHub ignora o
 // redirect_uri e usa o "Authorization callback URL" cadastrado no app — ele
 // precisa ser FRONTEND_URL + /api/auth/github.
-auth.use('/github', (c, next) => {
+auth.use('/github', async (c, next) => {
+  if (missingSecrets(c, ['GITHUB_CLIENT_ID', 'GITHUB_CLIENT_SECRET'])) return loginFailed(c)
+
   return githubAuth({
     client_id: c.env.GITHUB_CLIENT_ID,
     client_secret: c.env.GITHUB_CLIENT_SECRET,
@@ -106,7 +120,9 @@ auth.get('/github', async (c) => {
 // Mesmo esquema do GitHub acima: middleware lida com o handshake OAuth,
 // a rota GET só cuida de mapear o perfil do Google pro formato comum e
 // completar o login.
-auth.use('/google', (c, next) => {
+auth.use('/google', async (c, next) => {
+  if (missingSecrets(c, ['GOOGLE_CLIENT_ID', 'GOOGLE_CLIENT_SECRET'])) return loginFailed(c)
+
   return googleAuth({
     client_id: c.env.GOOGLE_CLIENT_ID,
     client_secret: c.env.GOOGLE_CLIENT_SECRET,

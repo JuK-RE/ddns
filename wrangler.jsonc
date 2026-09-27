@@ -21,7 +21,18 @@
     // O front (Vercel) repassa /api/* pra este Worker (rewrite no vercel.json
     // do ddns-ui). Pra dev, sobrescreva no .dev.vars (ver .dev.vars.example).
     "FRONTEND_URL": "https://ddns.juk.re"
-  }
+    // Secrets do DDNS (não vão aqui — use `wrangler secret put` ou .dev.vars):
+    //   CF_API_TOKEN → token da Cloudflare com Zone → DNS → Edit só na zona juk.re
+    //   CF_ZONE_ID   → id da zona juk.re (ou preencha zones.cf_zone_id no D1)
+  },
+  // Rate limiting das rotas públicas do DDNS (ADR-003).
+  // - DDNS_UPDATE_LIMITER: teto de rajada por token (10 chamadas/min).
+  // - DDNS_AUTHFAIL_LIMITER: tentativas com token inválido, por IP.
+  // O intervalo mínimo de 5 min é feito no código, via Cache API.
+  "ratelimits": [
+    { "name": "DDNS_UPDATE_LIMITER", "namespace_id": "1001", "simple": { "limit": 10, "period": 60 } },
+    { "name": "DDNS_AUTHFAIL_LIMITER", "namespace_id": "1002", "simple": { "limit": 20, "period": 60 } }
+  ]
   // "compatibility_flags": [
   //   "nodejs_compat"
   // ],

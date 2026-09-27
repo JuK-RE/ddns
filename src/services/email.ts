@@ -103,3 +103,52 @@ export async function sendNewLoginEmail(env: CloudflareBindings, user: User, pro
 
   await sendEmail(env, user.email, 'Novo login na sua conta JUK.re DDNS', html)
 }
+
+// ─── Hosts DDNS ────────────────────────────────────────────────────────
+// Os e-mails levam SÓ o endereço do host — nunca o token nem a URL de
+// atualização (ADR-003).
+
+function escapeHtml(value: string): string {
+  return value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
+}
+
+function brDateTime(date: Date): string {
+  const d = date.toLocaleDateString('pt-BR', { timeZone: 'America/Sao_Paulo' })
+  const t = date.toLocaleTimeString('pt-BR', { timeZone: 'America/Sao_Paulo', hour: '2-digit', minute: '2-digit' })
+  return `${d} às ${t}`
+}
+
+export async function sendHostCreatedEmail(
+  env: CloudflareBindings,
+  user: User,
+  host: { fqdn: string; label: string }
+): Promise<void> {
+  if (!user.email) return
+
+  const html = layout(
+    'Novo host DDNS criado',
+    `<p>Foi criado um novo host de DDNS na sua conta.</p>
+     <p><strong>Host:</strong> ${escapeHtml(host.fqdn)}<br>
+        <strong>Nome:</strong> ${escapeHtml(host.label)}<br>
+        <strong>Criado em:</strong> ${brDateTime(new Date())}</p>
+     <p>Se não foi você, acesse o painel e exclua o host.</p>`
+  )
+
+  await sendEmail(env, user.email, `Novo host DDNS criado: ${host.fqdn}`, html)
+}
+
+export async function sendHostDeletedEmail(
+  env: CloudflareBindings,
+  user: User,
+  host: { fqdn: string }
+): Promise<void> {
+  if (!user.email) return
+
+  const html = layout(
+    'Host DDNS excluído',
+    `<p>O host de DDNS <strong>${escapeHtml(host.fqdn)}</strong> foi excluído da sua conta em ${brDateTime(new Date())}.</p>
+     <p>O endereço fica reservado para você por 15 dias. Depois disso, ele pode ser usado por outra pessoa.</p>`
+  )
+
+  await sendEmail(env, user.email, `Host DDNS excluído: ${host.fqdn}`, html)
+}
