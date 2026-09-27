@@ -1,13 +1,13 @@
 import { Hono } from 'hono'
-import { requireAuth } from '../middlewares/auth'
+import { requireAdmin } from '../middlewares/auth'
 import type { AppVariables } from '../types'
 
 type Env = { Bindings: CloudflareBindings; Variables: AppVariables }
 
 const versions = new Hono<Env>()
 
-// Pública: lista as versões cadastradas (mais recente primeiro).
-versions.get('/', async (c) => {
+// Só administradores: lista as versões cadastradas (mais recente primeiro).
+versions.get('/', requireAdmin, async (c) => {
   const { results } = await c.env.DB.prepare(
     'SELECT id, version, description, created_at FROM system_versions ORDER BY id DESC'
   ).all()
@@ -15,8 +15,8 @@ versions.get('/', async (c) => {
   return c.json({ versions: results })
 })
 
-// Protegida: só usuário autenticado pode registrar uma nova versão.
-versions.post('/', requireAuth, async (c) => {
+// Só administradores podem registrar uma nova versão.
+versions.post('/', requireAdmin, async (c) => {
   const body = await c.req.json<{ version?: string; description?: string }>()
 
   if (!body.version) {

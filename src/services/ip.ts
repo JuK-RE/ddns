@@ -43,6 +43,81 @@ export function looksLikeIPv6(value: string): boolean {
   return value.includes(':')
 }
 
+// ─── IPv6 ──────────────────────────────────────────────────────────────
+
+/** "2001:db8::1" → 8 grupos de 16 bits. Sem IPv4 embutido nem zona (%eth0). */
+export function parseIPv6(value: string): number[] | null {
+  const text = value.trim()
+  if (!text.includes(':') || !/^[0-9a-fA-F:]+$/.test(text)) return null
+
+  const halves = text.split('::')
+  if (halves.length > 2) return null
+
+  const toGroups = (part: string): number[] | null => {
+    if (part === '') return []
+    const groups: number[] = []
+    for (const g of part.split(':')) {
+      if (!/^[0-9a-fA-F]{1,4}$/.test(g)) return null
+      groups.push(parseInt(g, 16))
+    }
+    return groups
+  }
+
+  const head = toGroups(halves[0])
+  const tail = halves.length === 2 ? toGroups(halves[1]) : []
+  if (!head || !tail) return null
+
+  if (halves.length === 1) return head.length === 8 ? head : null
+  if (head.length + tail.length > 7) return null // "::" precisa cobrir pelo menos 1 grupo
+
+  return [...head, ...new Array<number>(8 - head.length - tail.length).fill(0), ...tail]
+}
+
+/** Forma canônica (RFC 5952): minúsculo, sem zeros à esquerda, maior sequência de zeros vira "::". */
+export function formatIPv6(groups: number[]): string {
+  let bestStart = -1
+  let bestLen = 0
+  for (let i = 0; i < 8; ) {
+    if (groups[i] !== 0) {
+      i++
+      continue
+    }
+    let j = i
+    while (j < 8 && groups[j] === 0) j++
+    if (j - i > bestLen) {
+      bestStart = i
+      bestLen = j - i
+    }
+    i = j
+  }
+
+  const hex = groups.map((g) => g.toString(16))
+  if (bestLen < 2) return hex.join(':')
+
+  return `${hex.slice(0, bestStart).join(':')}::${hex.slice(bestStart + bestLen).join(':')}`
+}
+
+/** IPv6 público = unicast global (2000::/3). Fora disso: loopback, link-local, ULA, multicast… */
+export function isPublicIPv6(groups: number[]): boolean {
+  return (groups[0] & 0xe000) === 0x2000
+}
+
+// ─── Qualquer família ──────────────────────────────────────────────────
+
+export type PublicIp = { family: 4 | 6; ip: string }
+
+/** IP público (v4 ou v6) já normalizado, ou null se for inválido/privado/reservado. */
+export function normalizePublicIp(value: string): PublicIp | null {
+  const text = value.trim()
+
+  if (looksLikeIPv6(text)) {
+    const groups = parseIPv6(text)
+    return groups && isPublicIPv6(groups) ? { family: 6, ip: formatIPv6(groups) } : null
+  }
+
+  return isPublicIPv4(text) ? { family: 4, ip: text } : null
+}
+
 // IP de quem chamou. Atrás da Cloudflare, `CF-Connecting-IP` é confiável.
 export function getRequestIp(c: Context): string {
   return c.req.header('cf-connecting-ip')?.trim() || c.req.header('x-forwarded-for')?.split(',')[0]?.trim() || ''

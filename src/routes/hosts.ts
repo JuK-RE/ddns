@@ -2,6 +2,7 @@ import { Hono } from 'hono'
 import type { Context } from 'hono'
 import { requireAuth } from '../middlewares/auth'
 import { deleteRecord, resolveZoneId } from '../services/cloudflare'
+import { applyManualDns } from '../services/dns'
 import { sendHostCreatedEmail, sendHostDeletedEmail } from '../services/email'
 import {
   HostError,
@@ -117,6 +118,24 @@ hosts.patch('/:id', async (c) => {
   return c.json({ host: serializeHost(updated ?? host) })
 })
 
+// Página "DNS": liga/desliga o DDNS e edita o IPv4/IPv6 do registro na mão.
+// Body: { ddns_enabled?: boolean, ipv4?: string | null, ipv6?: string | null }
+hosts.patch('/:id/dns', async (c) => {
+  const host = await getHostForUser(c.env.DB, c.get('user').id, c.req.param('id'))
+  if (!host) return c.json({ error: 'Host não encontrado' }, 404)
+
+  const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>
+
+  try {
+    await applyManualDns(c.env, host, { ddns_enabled: body.ddns_enabled, ipv4: body.ipv4, ipv6: body.ipv6 })
+  } catch (err) {
+    return fail(c, err)
+  }
+
+  const updated = await getHostForUser(c.env.DB, c.get('user').id, host.id)
+  return c.json({ host: serializeHost(updated ?? host) })
+})
+
 // Regenera o token: o anterior para de funcionar na hora.
 hosts.post('/:id/token', async (c) => {
   const host = await getHostForUser(c.env.DB, c.get('user').id, c.req.param('id'))
@@ -135,9 +154,10 @@ hosts.delete('/:id', async (c) => {
   // excluído mesmo assim e fica marcado pra limpeza (o nome só volta a
   // ficar livre quando o registro sumir).
   let cleanupPending = false
-  if (host.cf_record_a_id) {
+  for (const recordId of [host.cf_record_a_id, host.cf_record_aaaa_id]) {
+    if (!recordId) continue
     try {
-      await deleteRecord(c.env, resolveZoneId(c.env, host.zone_cf_id), host.cf_record_a_id)
+      await deleteRecord(c.env, resolveZoneId(c.env, host.zone_cf_id), recordId)
     } catch (err) {
       cleanupPending = true
       console.error('Falha ao apagar registro na Cloudflare:', host.id, err instanceof Error ? err.message : err)

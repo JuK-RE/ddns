@@ -14,6 +14,7 @@ import {
 } from '../services/session'
 import { sendWelcomeEmail, sendNewLoginEmail } from '../services/email'
 import { requireAuth } from '../middlewares/auth'
+import { isAdminEmail } from '../services/admin'
 import type { AppVariables } from '../types'
 
 type Env = { Bindings: CloudflareBindings; Variables: AppVariables }
@@ -173,7 +174,7 @@ auth.get('/me', async (c) => {
   }
 
   const user = await getUserById(c.env.DB, session.sub)
-  return c.json({ user })
+  return c.json({ user: user ? { ...user, is_admin: isAdminEmail(c.env, user.email) } : null })
 })
 
 // Lista as sessões (ativas e revogadas) do usuário logado — base pra uma

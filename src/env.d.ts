@@ -23,6 +23,8 @@ declare global {
     CF_API_TOKEN: string
     // Só pra testes locais: URL alternativa da API da Cloudflare (mock). Em produção, não definir.
     CF_API_BASE?: string
+    // E-mails de administradores, separados por vírgula (secret). Sem ele, ninguém é admin.
+    ADMIN_EMAILS?: string
     // Id da zona juk.re na Cloudflare. Usado quando `zones.cf_zone_id` está vazio.
     CF_ZONE_ID: string
     // Bindings de Rate Limiting (declarados em `ratelimits` no wrangler.jsonc).

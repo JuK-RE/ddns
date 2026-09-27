@@ -27,7 +27,11 @@ export type HostRow = {
   token_hash: string
   token_prefix: string
   last_ipv4: string | null
+  last_ipv6: string | null
   cf_record_a_id: string | null
+  cf_record_aaaa_id: string | null
+  /** 1 = o conector pode atualizar o IP; 0 = DDNS pausado (só edição manual). */
+  ddns_enabled: number
   last_check_at: string | null
   last_change_at: string | null
   last_user_agent: string | null
@@ -41,7 +45,7 @@ export type HostWithZone = HostRow & { zone_suffix: string; zone_cf_id: string }
 
 export class HostError extends Error {
   constructor(
-    public status: 400 | 403 | 404 | 409 | 422,
+    public status: 400 | 403 | 404 | 409 | 422 | 502,
     public code: string,
     message: string,
     public extra: Record<string, unknown> = {}
@@ -191,7 +195,9 @@ export function serializeHost(h: HostWithZone) {
     fqdn: h.fqdn,
     connector: h.connector,
     token_prefix: h.token_prefix,
+    ddns_enabled: h.ddns_enabled === 1,
     last_ipv4: h.last_ipv4,
+    last_ipv6: h.last_ipv6,
     last_check_at: toIso(h.last_check_at),
     last_change_at: toIso(h.last_change_at),
     last_user_agent: h.last_user_agent,
@@ -306,10 +312,15 @@ export async function markDeleted(db: D1Database, host: HostWithZone, cleanupPen
   await db
     .prepare(
       `UPDATE hosts
-       SET deleted_at = datetime('now'), cf_cleanup_pending = ?, cf_record_a_id = ?
+       SET deleted_at = datetime('now'), cf_cleanup_pending = ?, cf_record_a_id = ?, cf_record_aaaa_id = ?
        WHERE id = ?`
     )
-    .bind(cleanupPending ? 1 : 0, cleanupPending ? host.cf_record_a_id : null, host.id)
+    .bind(
+      cleanupPending ? 1 : 0,
+      cleanupPending ? host.cf_record_a_id : null,
+      cleanupPending ? host.cf_record_aaaa_id : null,
+      host.id
+    )
     .run()
 }
 

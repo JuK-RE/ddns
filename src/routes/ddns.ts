@@ -29,14 +29,20 @@ ddns.get('/v1/ip', (c) => {
 function respondV1(c: Context<Env>, out: UpdateOutcome) {
   const asText = c.req.query('format') === 'text'
 
-  const send = (status: 200 | 400 | 401 | 404 | 429 | 503, body: Record<string, unknown>, line: string) =>
+  const send = (status: 200 | 400 | 401 | 403 | 404 | 429 | 503, body: Record<string, unknown>, line: string) =>
     asText ? c.text(`${line}\n`, status) : c.json(body, status)
 
   switch (out.kind) {
     case 'updated':
-      return send(200, { status: 'updated', hostname: out.hostname, ip: out.ip }, `updated ${out.ip}`)
+      return send(200, { status: 'updated', hostname: out.hostname, ip: out.ip, type: out.record }, `updated ${out.ip}`)
     case 'unchanged':
-      return send(200, { status: 'unchanged', hostname: out.hostname, ip: out.ip }, `unchanged ${out.ip}`)
+      return send(200, { status: 'unchanged', hostname: out.hostname, ip: out.ip, type: out.record }, `unchanged ${out.ip}`)
+    case 'disabled':
+      return send(
+        403,
+        { status: 'disabled', hostname: out.hostname, message: 'DDNS desativado para este host no painel.' },
+        'disabled'
+      )
     case 'rate_limited':
       c.header('Retry-After', String(out.retryAfter))
       return send(429, { status: 'rate_limited', retry_after: out.retryAfter }, 'rate_limited')
@@ -125,6 +131,8 @@ ddns.get('/nic/update', async (c) => {
       case 'unauthorized':
         return 'badauth'
       case 'nohost':
+      case 'disabled':
+        // Não existe código dyndns2 pra "host pausado"; `nohost` é o que os clientes tratam como "não atualize".
         return 'nohost'
       case 'bad_ip':
         return 'badip'

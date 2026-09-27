@@ -1,5 +1,5 @@
 // Cliente mínimo da API v4 da Cloudflare, só pro que o DDNS precisa:
-// criar/atualizar/apagar o registro A de um host.
+// criar/atualizar/apagar os registros A (IPv4) e AAAA (IPv6) de um host.
 //
 // Regras (ver ADR-003): `proxied: false` sempre (RDP, câmera e portas
 // arbitrárias não passam pelo proxy), TTL 60 e um `comment` que permite
@@ -51,24 +51,27 @@ export function resolveZoneId(env: CloudflareBindings, zoneCfId: string): string
   return id
 }
 
-function recordBody(fqdn: string, ip: string, hostId: string) {
-  return { type: 'A', name: fqdn, content: ip, ttl: 60, proxied: false, comment: `jukre-ddns host ${hostId}` }
+export type RecordType = 'A' | 'AAAA'
+
+function recordBody(type: RecordType, fqdn: string, ip: string, hostId: string) {
+  return { type, name: fqdn, content: ip, ttl: 60, proxied: false, comment: `jukre-ddns host ${hostId}` }
 }
 
 /**
- * Garante que `fqdn` aponte pra `ip`. Cria o registro se `recordId` for
- * nulo, atualiza se existir (e recria se ele sumiu na Cloudflare).
- * Devolve o id do registro.
+ * Garante que `fqdn` aponte pra `ip` (registro A ou AAAA, conforme `type`).
+ * Cria o registro se `recordId` for nulo, atualiza se existir (e recria se
+ * ele sumiu na Cloudflare). Devolve o id do registro.
  */
-export async function upsertARecord(
+export async function upsertRecord(
   env: CloudflareBindings,
   zoneId: string,
+  type: RecordType,
   fqdn: string,
   ip: string,
   hostId: string,
   recordId: string | null
 ): Promise<string> {
-  const body = recordBody(fqdn, ip, hostId)
+  const body = recordBody(type, fqdn, ip, hostId)
 
   if (recordId) {
     try {
@@ -84,13 +87,13 @@ export async function upsertARecord(
     const created = await cf<{ id: string }>(env, 'POST', `/zones/${zoneId}/dns_records`, body)
     return created.id
   } catch (err) {
-    // Já existe um registro A com esse nome (ex.: sobrou de uma exclusão
+    // Já existe um registro desse tipo com esse nome (ex.: sobrou de uma exclusão
     // que falhou): adota e atualiza em vez de dar erro.
     if (err instanceof CloudflareError && err.status === 400 && err.codes.some((c) => c === 81057 || c === 81058)) {
       const existing = await cf<{ id: string }[]>(
         env,
         'GET',
-        `/zones/${zoneId}/dns_records?type=A&name=${encodeURIComponent(fqdn)}`
+        `/zones/${zoneId}/dns_records?type=${type}&name=${encodeURIComponent(fqdn)}`
       )
       if (existing[0]) {
         const updated = await cf<{ id: string }>(env, 'PATCH', `/zones/${zoneId}/dns_records/${existing[0].id}`, body)
