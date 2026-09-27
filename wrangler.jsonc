@@ -24,6 +24,7 @@
     // Secrets do DDNS (não vão aqui — use `wrangler secret put` ou .dev.vars):
     //   CF_API_TOKEN → token da Cloudflare com Zone → DNS → Edit só na zona juk.re
     //   CF_ZONE_ID   → id da zona juk.re (ou preencha zones.cf_zone_id no D1)
+    //   ADMIN_EMAILS → e-mails de admin, separados por vírgula (libera a página de Versões)
   },
   // Rate limiting das rotas públicas do DDNS (ADR-003).
   // - DDNS_UPDATE_LIMITER: teto de rajada por token (10 chamadas/min).

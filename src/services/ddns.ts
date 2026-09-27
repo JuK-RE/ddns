@@ -1,11 +1,13 @@
 import type { Context } from 'hono'
-import { resolveZoneId, upsertARecord } from './cloudflare'
+import { resolveZoneId, upsertRecord, type RecordType } from './cloudflare'
 import { findHostByTokenHash, sha256Hex } from './hosts'
-import { getRequestIp, isPublicIPv4, looksLikeIPv6 } from './ip'
+import { getRequestIp, normalizePublicIp } from './ip'
 import type { AppVariables } from '../types'
 
 // Algoritmo de atualização do IP de um host (ADR-003, §8 do planejamento).
 // É chamado pelas duas rotas públicas: /v1/update/:token e /nic/update (dyndns2).
+// O IP pode ser IPv4 (registro A) ou IPv6 (registro AAAA): quem decide é a
+// família do endereço recebido (`myip` ou o IP de quem chamou).
 //
 // ⚠️ Nunca logar o token nem a URL/headers dessas rotas — o token vai neles.
 
@@ -14,10 +16,12 @@ type Env = { Bindings: CloudflareBindings; Variables: AppVariables }
 export type UpdateSource = 'v1' | 'dyndns2'
 
 export type UpdateOutcome =
-  | { kind: 'updated' | 'unchanged'; hostname: string; ip: string }
+  | { kind: 'updated' | 'unchanged'; hostname: string; ip: string; record: RecordType }
   | { kind: 'rate_limited'; retryAfter: number }
   | { kind: 'unauthorized' }
   | { kind: 'nohost' }
+  /** Host com "DDNS ativo" desligado no painel: a atualização é ignorada. */
+  | { kind: 'disabled'; hostname: string }
   | { kind: 'bad_ip'; message: string }
   | { kind: 'error' }
 
@@ -27,16 +31,16 @@ const MIN_INTERVAL_SECONDS = 300
 const CHECK_WRITE_EVERY = '-1 hour'
 
 // ─── Intervalo mínimo via Cache API ────────────────────────────────────
-// Uma entrada por host (chave = hash do token) com o último IP e a hora. É
-// gratuito e não toca no D1. O cache é por data center, o que basta: o
-// roteador quase sempre cai no mesmo.
-function cacheKey(tokenHash: string) {
-  return new Request(`https://ddns-throttle.internal/${tokenHash}`)
+// Uma entrada por host e por família (chave = hash do token + tipo) com o
+// último IP e a hora. É gratuito e não toca no D1. O cache é por data
+// center, o que basta: o roteador quase sempre cai no mesmo.
+function cacheKey(tokenHash: string, record: RecordType) {
+  return new Request(`https://ddns-throttle.internal/${tokenHash}/${record}`)
 }
 
-async function recentCall(tokenHash: string, ip: string): Promise<number | null> {
+async function recentCall(tokenHash: string, record: RecordType, ip: string): Promise<number | null> {
   try {
-    const hit = await caches.default.match(cacheKey(tokenHash))
+    const hit = await caches.default.match(cacheKey(tokenHash, record))
     if (!hit) return null
     const { ip: cachedIp, at } = (await hit.json()) as { ip: string; at: number }
     if (cachedIp !== ip) return null // IP mudou: mudança legítima, deixa passar
@@ -46,10 +50,10 @@ async function recentCall(tokenHash: string, ip: string): Promise<number | null>
   }
 }
 
-function rememberCall(c: Context<Env>, tokenHash: string, ip: string) {
+function rememberCall(c: Context<Env>, tokenHash: string, record: RecordType, ip: string) {
   const put = caches.default
     .put(
-      cacheKey(tokenHash),
+      cacheKey(tokenHash, record),
       new Response(JSON.stringify({ ip, at: Date.now() }), {
         headers: { 'Cache-Control': `max-age=${MIN_INTERVAL_SECONDS}` },
       })
@@ -67,7 +71,7 @@ export async function processUpdate(
   c: Context<Env>,
   opts: {
     token: string
-    /** IP informado pelo cliente (`myip`); sem ele, usa o IP de quem chamou. */
+    /** IP informado pelo cliente (`myip`, v4 ou v6); sem ele, usa o IP de quem chamou. */
     myip?: string | null
     /** dyndns2: hostnames que o cliente diz estar atualizando (o do token tem que estar entre eles). */
     hostnames?: string[]
@@ -83,22 +87,23 @@ export async function processUpdate(
     if (!success) return { kind: 'rate_limited', retryAfter: 60 }
   }
 
-  // 2. Qual IP vamos gravar? `myip` ou o de quem chamou. Só IPv4 público (fase 1).
-  const newIp = opts.myip?.trim() || callerIp
-  if (looksLikeIPv6(newIp)) {
+  // 2. Qual IP vamos gravar? `myip` ou o de quem chamou. Só endereços
+  //    públicos; a família define o registro (A ou AAAA).
+  const parsed = normalizePublicIp(opts.myip?.trim() || callerIp)
+  if (!parsed) {
     return {
       kind: 'bad_ip',
       message: opts.myip
-        ? 'Só IPv4 por enquanto (IPv6 chega na fase 2).'
-        : 'Você chamou por IPv6. Use IPv4 (curl -4) ou informe o IP com ?myip=.',
+        ? 'IP inválido ou privado. Informe um IPv4 ou IPv6 público.'
+        : 'Não foi possível usar o IP de origem da chamada. Informe um IP público com ?myip=.',
     }
   }
-  if (!isPublicIPv4(newIp)) {
-    return { kind: 'bad_ip', message: 'IP inválido ou privado. Informe um IPv4 público.' }
-  }
+
+  const { ip: newIp, family } = parsed
+  const record: RecordType = family === 4 ? 'A' : 'AAAA'
 
   // 3. Intervalo mínimo de 5 min com o mesmo IP (sem consultar o D1).
-  const wait = await recentCall(tokenHash, newIp)
+  const wait = await recentCall(tokenHash, record, newIp)
   if (wait !== null) return { kind: 'rate_limited', retryAfter: wait }
 
   // 4. Token → host.
@@ -117,45 +122,61 @@ export async function processUpdate(
     return { kind: 'nohost' }
   }
 
-  // 6. Sem mudança: não chama a Cloudflare. Só renova `last_check_at` se
-  //    o valor salvo já tem mais de 1 h.
-  if (newIp === host.last_ipv4) {
-    await c.env.DB.prepare(
+  // Renova `last_check_at` só se o valor salvo já tem mais de 1 h.
+  const touchCheck = () =>
+    c.env.DB.prepare(
       `UPDATE hosts SET last_check_at = datetime('now')
        WHERE id = ? AND (last_check_at IS NULL OR last_check_at < datetime('now', '${CHECK_WRITE_EVERY}'))`
     )
       .bind(host.id)
       .run()
 
-    rememberCall(c, tokenHash, newIp)
-    return { kind: 'unchanged', hostname: host.fqdn, ip: newIp }
+  // 6. DDNS pausado no painel: o conector está vivo (registra o contato),
+  //    mas o registro não é tocado.
+  if (host.ddns_enabled !== 1) {
+    await touchCheck()
+    return { kind: 'disabled', hostname: host.fqdn }
   }
 
-  // 7. Mudou: atualiza o registro A na Cloudflare. Se falhar, não mexe no banco.
+  // 7. Sem mudança: não chama a Cloudflare.
+  const lastIp = family === 4 ? host.last_ipv4 : host.last_ipv6
+  if (newIp === lastIp) {
+    await touchCheck()
+    rememberCall(c, tokenHash, record, newIp)
+    return { kind: 'unchanged', hostname: host.fqdn, ip: newIp, record }
+  }
+
+  // 8. Mudou: atualiza o registro na Cloudflare. Se falhar, não mexe no banco.
   let recordId: string
   try {
     const zoneId = resolveZoneId(c.env, host.zone_cf_id)
-    recordId = await upsertARecord(c.env, zoneId, host.fqdn, newIp, host.id, host.cf_record_a_id)
+    const currentId = family === 4 ? host.cf_record_a_id : host.cf_record_aaaa_id
+    recordId = await upsertRecord(c.env, zoneId, record, host.fqdn, newIp, host.id, currentId)
   } catch (err) {
     console.error('Falha ao atualizar DNS na Cloudflare:', host.id, err instanceof Error ? err.message : err)
     return { kind: 'error' }
   }
 
-  // 8. Grava o novo estado + histórico.
+  // 9. Grava o novo estado + histórico.
   const userAgent = c.req.header('user-agent')?.slice(0, 200) ?? null
+  const setIp =
+    family === 4
+      ? `last_ipv4 = ?, cf_record_a_id = ?`
+      : `last_ipv6 = ?, cf_record_aaaa_id = ?`
+
   await c.env.DB.batch([
     c.env.DB.prepare(
       `UPDATE hosts
-       SET last_ipv4 = ?, cf_record_a_id = ?, last_change_at = datetime('now'),
+       SET ${setIp}, last_change_at = datetime('now'),
            last_check_at = datetime('now'), last_user_agent = ?
        WHERE id = ?`
     ).bind(newIp, recordId, userAgent, host.id),
     c.env.DB.prepare(
       `INSERT INTO host_ip_history (host_id, record_type, old_ip, new_ip, source, user_agent)
-       VALUES (?, 'A', ?, ?, ?, ?)`
-    ).bind(host.id, host.last_ipv4, newIp, opts.source, userAgent),
+       VALUES (?, ?, ?, ?, ?, ?)`
+    ).bind(host.id, record, lastIp, newIp, opts.source, userAgent),
   ])
 
-  rememberCall(c, tokenHash, newIp)
-  return { kind: 'updated', hostname: host.fqdn, ip: newIp }
+  rememberCall(c, tokenHash, record, newIp)
+  return { kind: 'updated', hostname: host.fqdn, ip: newIp, record }
 }
