@@ -21,6 +21,7 @@ import {
   toIso,
   updateHost,
 } from '../services/hosts'
+import { listRequestLog } from '../services/requestLog'
 import type { AppVariables } from '../types'
 
 type Env = { Bindings: CloudflareBindings; Variables: AppVariables }
@@ -181,6 +182,14 @@ hosts.get('/:id/history', async (c) => {
   const limit = Number.isFinite(requested) ? Math.min(Math.max(Math.trunc(requested), 1), 200) : 50
 
   return c.json({ history: await getHistory(c.env.DB, host.id, limit) })
+})
+
+// Últimas 30 chamadas do conector à API de atualização (/v1/update, /nic/update).
+hosts.get('/:id/logs', async (c) => {
+  const host = await getHostForUser(c.env.DB, c.get('user').id, c.req.param('id'))
+  if (!host) return c.json({ error: 'Host não encontrado' }, 404)
+
+  return c.json({ logs: await listRequestLog(c.env.DB, host.id) })
 })
 
 export default hosts
