@@ -118,6 +118,13 @@ export function normalizePublicIp(value: string): PublicIp | null {
   return isPublicIPv4(text) ? { family: 4, ip: text } : null
 }
 
+/** Família de um IP sintaticamente válido (público ou não), ou null se não for IP. */
+export function ipFamily(value: string): 4 | 6 | null {
+  const text = value.trim()
+  if (looksLikeIPv6(text)) return parseIPv6(text) ? 6 : null
+  return parseIPv4(text) ? 4 : null
+}
+
 // IP de quem chamou. Atrás da Cloudflare, `CF-Connecting-IP` é confiável.
 export function getRequestIp(c: Context): string {
   return c.req.header('cf-connecting-ip')?.trim() || c.req.header('x-forwarded-for')?.split(',')[0]?.trim() || ''
