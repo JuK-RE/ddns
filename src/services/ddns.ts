@@ -1,7 +1,8 @@
 import type { Context } from 'hono'
 import { resolveZoneId, upsertRecord, type RecordType } from './cloudflare'
-import { findHostByTokenHash, sha256Hex } from './hosts'
+import { findHostByTokenHash, sha256Hex, type HostWithZone } from './hosts'
 import { getRequestIp, ipFamily, normalizePublicIp } from './ip'
+import { logRequest, shouldLogNoisy, type RequestLogEntry } from './requestLog'
 import type { AppVariables } from '../types'
 
 // Algoritmo de atualização do IP de um host (ADR-003, §8 do planejamento).
@@ -67,18 +68,87 @@ function rememberCall(c: Context<Env>, tokenHash: string, record: RecordType, ip
   }
 }
 
-export async function processUpdate(
-  c: Context<Env>,
-  opts: {
-    token: string
-    /** IP informado pelo cliente (`myip`, v4 ou v6); sem ele, usa o IP de quem chamou. */
-    myip?: string | null
-    /** dyndns2: hostnames que o cliente diz estar atualizando (o do token tem que estar entre eles). */
-    hostnames?: string[]
-    source: UpdateSource
+type UpdateOpts = {
+  token: string
+  /** IP informado pelo cliente (`myip`, v4 ou v6); sem ele, usa o IP de quem chamou. */
+  myip?: string | null
+  /** dyndns2: hostnames que o cliente diz estar atualizando (o do token tem que estar entre eles). */
+  hostnames?: string[]
+  source: UpdateSource
+}
+
+/** O que a execução descobriu no caminho (pro log). */
+type Trace = {
+  host: HostWithZone | null
+  ip: string | null
+  record: RecordType | null
+  /** true = o host já foi buscado pelo token (mesmo que não exista). */
+  lookedUp: boolean
+}
+
+// Status HTTP de cada resultado, como as rotas respondem (ver routes/ddns.ts).
+function statusFor(source: UpdateSource, kind: UpdateOutcome['kind']): number {
+  switch (kind) {
+    case 'updated':
+    case 'unchanged':
+      return 200
+    case 'disabled':
+      return source === 'v1' ? 403 : 200
+    case 'nohost':
+      return source === 'v1' ? 401 : 200
+    case 'unauthorized':
+      return 401
+    case 'rate_limited':
+      return 429
+    case 'bad_ip':
+      return 400
+    case 'error':
+      return 503
   }
-): Promise<UpdateOutcome> {
+}
+
+/**
+ * Atualiza o IP e registra a chamada no log do host (host_request_log).
+ * Token inválido não entra no log: sem host não há onde gravar.
+ */
+export async function processUpdate(c: Context<Env>, opts: UpdateOpts): Promise<UpdateOutcome> {
   const tokenHash = await sha256Hex(opts.token)
+  const trace: Trace = { host: null, ip: null, record: null, lookedUp: false }
+  const out = await runUpdate(c, opts, tokenHash, trace)
+
+  if (out.kind === 'unauthorized') return out
+
+  // Recusas que acontecem antes de buscar o host (rajada, limite de 5 min,
+  // IP inválido): busca o host só pra registrar, no máx. 1x/min por token.
+  if (!trace.lookedUp && (out.kind === 'rate_limited' || out.kind === 'bad_ip')) {
+    if (!(await shouldLogNoisy(c, tokenHash))) return out
+    trace.host = await findHostByTokenHash(c.env.DB, tokenHash).catch(() => null)
+  }
+  if (!trace.host) return out
+
+  const entry: RequestLogEntry = {
+    hostId: trace.host.id,
+    source: opts.source,
+    result: out.kind,
+    status: statusFor(opts.source, out.kind),
+    recordType: trace.record,
+    ip: trace.ip ?? opts.myip?.trim() ?? null,
+    callerIp: getRequestIp(c) || null,
+    userAgent: c.req.header('user-agent') ?? null,
+    message:
+      out.kind === 'bad_ip'
+        ? out.message
+        : out.kind === 'rate_limited'
+          ? `Tente de novo em ${out.retryAfter} s`
+          : out.kind === 'nohost'
+            ? 'O hostname informado não é o deste token'
+            : null,
+  }
+  logRequest(c, entry)
+  return out
+}
+
+async function runUpdate(c: Context<Env>, opts: UpdateOpts, tokenHash: string, trace: Trace): Promise<UpdateOutcome> {
   const callerIp = getRequestIp(c)
 
   // 1. Teto de rajada por token.
@@ -111,6 +181,8 @@ export async function processUpdate(
 
   const { ip: newIp, family } = parsed
   const record: RecordType = family === 4 ? 'A' : 'AAAA'
+  trace.ip = newIp
+  trace.record = record
 
   // 3. Intervalo mínimo de 5 min com o mesmo IP (sem consultar o D1).
   const wait = await recentCall(tokenHash, record, newIp)
@@ -118,6 +190,8 @@ export async function processUpdate(
 
   // 4. Token → host.
   const host = await findHostByTokenHash(c.env.DB, tokenHash)
+  trace.host = host
+  trace.lookedUp = true
   if (!host) {
     // Quem fica errando token é limitado por IP.
     if (c.env.DDNS_AUTHFAIL_LIMITER && callerIp) {
