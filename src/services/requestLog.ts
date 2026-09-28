@@ -2,7 +2,9 @@ import type { Context } from 'hono'
 import { toIso } from './hosts'
 import type { AppVariables } from '../types'
 
-// Log das chamadas de atualização por host (tabela host_request_log).
+// Log de requisições por host (tabela host_request_log): as chamadas dos
+// conectores (/v1/update e /nic/update) e as ações feitas pelo painel
+// (criar, editar, IP manual, pausar/ativar DDNS, token novo).
 // Mantém só as REQUEST_LOG_KEEP mais recentes de cada host.
 //
 // ⚠️ Nunca gravar token, URL ou headers (além do user-agent).
@@ -11,10 +13,24 @@ type Env = { Bindings: CloudflareBindings; Variables: AppVariables }
 
 export const REQUEST_LOG_KEEP = 30
 
+/** Resultado de uma chamada de conector. */
+export type ConnectorResult = 'updated' | 'unchanged' | 'disabled' | 'rate_limited' | 'nohost' | 'bad_ip' | 'error'
+
+/** Ação feita pelo painel. */
+export type PanelResult =
+  | 'created'
+  | 'settings_updated'
+  | 'manual_ip'
+  | 'manual_ip_removed'
+  | 'ddns_enabled'
+  | 'ddns_disabled'
+  | 'token_regenerated'
+  | 'error'
+
 export type RequestLogEntry = {
   hostId: string
-  source: 'v1' | 'dyndns2'
-  result: 'updated' | 'unchanged' | 'disabled' | 'rate_limited' | 'nohost' | 'bad_ip' | 'error'
+  source: 'v1' | 'dyndns2' | 'panel'
+  result: ConnectorResult | PanelResult
   status: number
   recordType?: 'A' | 'AAAA' | null
   ip?: string | null
@@ -67,6 +83,24 @@ export function logRequest(c: Context<Env>, entry: RequestLogEntry) {
   } catch {
     // sem executionCtx (testes): a promise segue sozinha
   }
+}
+
+/** Atalho pras ações do painel (status 200, sem IP de origem nem user-agent). */
+export function logPanelAction(
+  c: Context<Env>,
+  hostId: string,
+  result: PanelResult,
+  extra: { ip?: string | null; recordType?: 'A' | 'AAAA' | null; message?: string | null; status?: number } = {}
+) {
+  logRequest(c, {
+    hostId,
+    source: 'panel',
+    result,
+    status: extra.status ?? 200,
+    recordType: extra.recordType ?? null,
+    ip: extra.ip ?? null,
+    message: extra.message ?? null,
+  })
 }
 
 // Chamadas recusadas antes de achar o host (limite de 5 min, IP inválido)

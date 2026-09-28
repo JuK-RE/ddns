@@ -36,11 +36,18 @@ function parseChange(record: RecordType, value: unknown, current: string | null)
   return parsed.ip === current ? null : { record, ip: parsed.ip }
 }
 
+/** O que a edição mudou de fato (pro log do host). */
+export type ManualDnsResult = {
+  /** true/false = o DDNS foi ligado/desligado agora; null = não mudou. */
+  ddns: boolean | null
+  changes: { record: RecordType; old: string | null; ip: string | null }[]
+}
+
 export async function applyManualDns(
   env: CloudflareBindings,
   host: HostWithZone,
   patch: ManualDnsPatch
-): Promise<void> {
+): Promise<ManualDnsResult> {
   if (patch.ddns_enabled !== undefined && typeof patch.ddns_enabled !== 'boolean') {
     throw new HostError(422, 'invalid', 'ddns_enabled deve ser verdadeiro ou falso.')
   }
@@ -52,6 +59,9 @@ export async function applyManualDns(
   const sets: string[] = []
   const binds: (string | number | null)[] = []
   const history: { record: RecordType; old: string | null; ip: string }[] = []
+
+  const ddnsChanged =
+    typeof patch.ddns_enabled === 'boolean' && patch.ddns_enabled !== (host.ddns_enabled === 1) ? patch.ddns_enabled : null
 
   if (typeof patch.ddns_enabled === 'boolean') {
     sets.push('ddns_enabled = ?')
@@ -82,7 +92,12 @@ export async function applyManualDns(
     throw new HostError(502, 'cloudflare', 'Não foi possível atualizar o DNS na Cloudflare. Tente de novo.')
   }
 
-  if (sets.length === 0) return
+  const result: ManualDnsResult = {
+    ddns: ddnsChanged,
+    changes: changes.map(({ record, ip }) => ({ record, old: record === 'A' ? host.last_ipv4 : host.last_ipv6, ip })),
+  }
+
+  if (sets.length === 0) return result
 
   const statements = [env.DB.prepare(`UPDATE hosts SET ${sets.join(', ')} WHERE id = ?`).bind(...binds, host.id)]
   for (const h of history) {
@@ -93,4 +108,5 @@ export async function applyManualDns(
     )
   }
   await env.DB.batch(statements)
+  return result
 }
