@@ -1,7 +1,7 @@
 import type { Context } from 'hono'
 import { resolveZoneId, upsertRecord, type RecordType } from './cloudflare'
 import { findHostByTokenHash, sha256Hex } from './hosts'
-import { getRequestIp, normalizePublicIp } from './ip'
+import { getRequestIp, ipFamily, normalizePublicIp } from './ip'
 import type { AppVariables } from '../types'
 
 // Algoritmo de atualização do IP de um host (ADR-003, §8 do planejamento).
@@ -89,7 +89,17 @@ export async function processUpdate(
 
   // 2. Qual IP vamos gravar? `myip` ou o de quem chamou. Só endereços
   //    públicos; a família define o registro (A ou AAAA).
-  const parsed = normalizePublicIp(opts.myip?.trim() || callerIp)
+  //    Roteador atrás de CGNAT/duplo NAT (UniFi/inadyn, pfSense, MikroTik
+  //    lendo a WAN) manda o IP privado da WAN em `myip`. Nesse caso usamos o
+  //    IP de origem da chamada — desde que seja da mesma família, pra um
+  //    `myip` IPv4 privado nunca virar atualização do AAAA.
+  const myip = opts.myip?.trim() || ''
+  let parsed = normalizePublicIp(myip || callerIp)
+  if (!parsed && myip) {
+    const family = ipFamily(myip)
+    const fromCaller = family ? normalizePublicIp(callerIp) : null
+    if (fromCaller && fromCaller.family === family) parsed = fromCaller
+  }
   if (!parsed) {
     return {
       kind: 'bad_ip',
