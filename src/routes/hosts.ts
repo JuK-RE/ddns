@@ -21,7 +21,7 @@ import {
   toIso,
   updateHost,
 } from '../services/hosts'
-import { listRequestLog } from '../services/requestLog'
+import { listRequestLog, logPanelAction } from '../services/requestLog'
 import type { AppVariables } from '../types'
 
 type Env = { Bindings: CloudflareBindings; Variables: AppVariables }
@@ -88,6 +88,7 @@ hosts.post('/', async (c) => {
       connector: body.connector,
     })
 
+    logPanelAction(c, host.id, 'created', { message: `Host criado (${host.connector})` })
     later(c, sendHostCreatedEmail(c.env, user, host))
     // O token só aparece aqui (e ao regenerar): no banco fica só o hash.
     return c.json({ host: serializeHost(host), token }, 201)
@@ -116,6 +117,12 @@ hosts.patch('/:id', async (c) => {
   }
 
   const updated = await getHostForUser(c.env.DB, c.get('user').id, host.id)
+  if (updated) {
+    const what: string[] = []
+    if (updated.label !== host.label) what.push(`nome: ${updated.label}`)
+    if (updated.connector !== host.connector) what.push(`conexão: ${updated.connector}`)
+    if (what.length > 0) logPanelAction(c, host.id, 'settings_updated', { message: `Configurações alteradas (${what.join(', ')})` })
+  }
   return c.json({ host: serializeHost(updated ?? host) })
 })
 
@@ -128,8 +135,27 @@ hosts.patch('/:id/dns', async (c) => {
   const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>
 
   try {
-    await applyManualDns(c.env, host, { ddns_enabled: body.ddns_enabled, ipv4: body.ipv4, ipv6: body.ipv6 })
+    const result = await applyManualDns(c.env, host, { ddns_enabled: body.ddns_enabled, ipv4: body.ipv4, ipv6: body.ipv6 })
+
+    if (result.ddns !== null) {
+      logPanelAction(c, host.id, result.ddns ? 'ddns_enabled' : 'ddns_disabled', {
+        message: result.ddns ? 'DDNS ativado pelo painel' : 'DDNS pausado pelo painel',
+      })
+    }
+    for (const ch of result.changes) {
+      logPanelAction(c, host.id, ch.ip === null ? 'manual_ip_removed' : 'manual_ip', {
+        ip: ch.ip ?? ch.old,
+        recordType: ch.record,
+        message:
+          ch.ip === null
+            ? `Registro ${ch.record} removido pelo painel`
+            : `IP editado pelo painel (antes: ${ch.old ?? 'nenhum'})`,
+      })
+    }
   } catch (err) {
+    if (err instanceof HostError && err.code === 'cloudflare') {
+      logPanelAction(c, host.id, 'error', { status: err.status, message: 'Falha ao editar o DNS na Cloudflare' })
+    }
     return fail(c, err)
   }
 
@@ -143,6 +169,7 @@ hosts.post('/:id/token', async (c) => {
   if (!host) return c.json({ error: 'Host não encontrado' }, 404)
 
   const token = await regenerateToken(c.env.DB, host)
+  logPanelAction(c, host.id, 'token_regenerated', { message: `Token novo gerado (${token.slice(0, 10)}…)` })
   return c.json({ token, token_prefix: token.slice(0, 10) })
 })
 
